@@ -111,13 +111,11 @@ namespace VRChatAutoFishing
             {
                 if (content.Contains("SAVED DATA"))
                 {
-                    // TODO：Thread-safe event invocation
                     OnDataSaved?.Invoke();
                 }
 
                 if (content.Contains("Fish Pickup attached to rod Toggles(True)"))
                 {
-                    // TODO：Thread-safe event invocation
                     OnFishPickup?.Invoke();
                 }
             }

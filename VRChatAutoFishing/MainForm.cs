@@ -113,7 +113,12 @@ namespace VRChatAutoFishing
             Text = $"[{text}] - ×Ô¶¯µöÓã";
         }
 
-        private void btnHelp_Click(object? sender, EventArgs e) => new HelpForm().ShowDialog();
+        private void btnHelp_Click(object? sender, EventArgs e)
+        {
+            HelpForm helpForm = new();
+            helpForm.ShowDialog();
+            helpForm.Dispose();
+        }
 
         private void UpdateCastTimeLabel()
         {

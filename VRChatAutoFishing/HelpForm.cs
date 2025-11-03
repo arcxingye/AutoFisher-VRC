@@ -140,21 +140,8 @@ namespace VRChatAutoFishing
             pictureBox.SizeMode = PictureBoxSizeMode.StretchImage;
             pictureBox.Dock = DockStyle.Fill;
 
-            bool imageLoaded = false;
-
-            // 方法1: 尝试从嵌入式资源加载
-            if (!imageLoaded)
-            {
-                imageLoaded = LoadImageFromEmbeddedResource(pictureBox, imageName);
-            }
-
-            // 方法2: 尝试从文件系统加载
-            if (!imageLoaded)
-            {
-                imageLoaded = LoadImageFromFileSystem(pictureBox, imageName);
-            }
-
-            // 方法3: 如果都失败，显示错误图片
+            bool imageLoaded = LoadImageFromEmbeddedResource(pictureBox, imageName);
+            
             if (!imageLoaded)
             {
                 ShowErrorImage(pictureBox, displayWidth, displayHeight, $"未找到图片: {imageName}");
@@ -184,7 +171,11 @@ namespace VRChatAutoFishing
                     {
                         if (stream != null)
                         {
-                            pictureBox.Image = Image.FromStream(stream);
+                            // 从流创建 Image，然后复制到新的 Bitmap，这样可以立即关闭流并释放原始 Image
+                            using (var img = Image.FromStream(stream))
+                            {
+                                pictureBox.Image = new Bitmap(img);
+                            }
                             return true;
                         }
                     }
@@ -193,34 +184,6 @@ namespace VRChatAutoFishing
             catch
             {
                 // 忽略错误，继续尝试其他方法
-            }
-            return false;
-        }
-
-        private bool LoadImageFromFileSystem(PictureBox pictureBox, string imageName)
-        {
-            try
-            {
-                // 尝试从应用程序目录加载
-                string[] possiblePaths = {
-                    Path.Combine(Application.StartupPath, "Resources", imageName),
-                    Path.Combine(Application.StartupPath, imageName),
-                    Path.Combine(Directory.GetCurrentDirectory(), "Resources", imageName),
-                    Path.Combine(Directory.GetCurrentDirectory(), imageName)
-                };
-
-                foreach (string path in possiblePaths)
-                {
-                    if (File.Exists(path))
-                    {
-                        pictureBox.Image = Image.FromFile(path);
-                        return true;
-                    }
-                }
-            }
-            catch
-            {
-                // 忽略错误
             }
             return false;
         }
@@ -238,6 +201,47 @@ namespace VRChatAutoFishing
                 }
             }
             pictureBox.Image = errorImage;
+        }
+
+        // 在 Dispose 时释放所有 PictureBox 的 Image，防止 GDI 句柄泄露
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try
+                {
+                    DisposeImagesRecursive(this);
+                }
+                catch
+                {
+                    // 忽略释放时的任何异常，仍然继续释放基类资源
+                }
+            }
+            base.Dispose(disposing);
+        }
+
+        private void DisposeImagesRecursive(Control parent)
+        {
+            foreach (Control c in parent.Controls)
+            {
+                if (c is PictureBox pb)
+                {
+                    if (pb.Image != null)
+                    {
+                        try
+                        {
+                            pb.Image.Dispose();
+                        }
+                        catch { }
+                        pb.Image = null;
+                    }
+                }
+                // 递归处理子控件
+                if (c.HasChildren)
+                {
+                    DisposeImagesRecursive(c);
+                }
+            }
         }
 
         private void InitializeComponent()
