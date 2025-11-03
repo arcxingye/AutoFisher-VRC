@@ -9,60 +9,11 @@ namespace VRChatAutoFishing
 {
     public partial class MainForm : Form
     {
-        private enum ActionState
-        {
-            kIdle = 0,
-            kPreparing,
-            kStartToCast,
-            kCasting,
-            kWaitForFish,
-            kReeling,
-            kFinishedReel,
-            kStopped,
-            kReCasting,
-            kReReeling,
-            // Exceptions
-            kTimeoutReelSingle,
-            kTimeoutReel,
-        }
-
-        private bool _isRunning = false;
-        private bool _isProtected = false;
-        private ActionState _currentAction = ActionState.kIdle;
-        private DateTime _lastCycleEnd;
-        private DateTime _lastCastTime;
-        private System.Timers.Timer _timeoutTimer;
-        private System.Timers.Timer _statusDisplayTimer;
-        private System.Timers.Timer _reelBackTimer;
-        private System.Timers.Timer _delaySaveTimer;
-        private OSCClient _oscClient;
-        private VRChatLogMonitor _logMonitor;
-        private bool _firstCast = true;
-        private Thread _fishingThread;
-        private bool _isReeling = false;
-        private bool _isClosing = false;
-        private ManualResetEvent _stopEvent = new(false);
-
-        // 线程安全的参数存储
-        private double _castTime;
-        private const double TIMEOUT_MINUTES = 3.0;
-
-        // 钓鱼统计相关变量
-        private int _fishCount = 0;
-        private bool _showingFishCount = false;
-        private DateTime _lastStatusSwitchTime = DateTime.Now;
-
-        // 收杆状态跟踪
-        private int _savedDataCount = 0;
-        private DateTime _firstSavedDataTime;
-
-        // 特殊抛竿相关变量
-        private double _actualCastTime = 0;
-        private double _reelBackTime = 0;
-
-        // Notifications
-        private NotificationManager _notificationManager = new();
         private SettingsForm _settingsForm = new();
+        private System.Timers.Timer _delaySaveTimer;
+        private AutoFisher? _autoFisher;
+        private bool _isFisherRunning = false;
+        private Managers? _managers;
 
         public MainForm()
         {
@@ -73,42 +24,45 @@ namespace VRChatAutoFishing
         private void InitializeFisherComponents()
         {
             AppSettings appSettings = _settingsForm.InitializeSavedValues();
-            _oscClient = new OSCClient("127.0.0.1", 9000);
-            _logMonitor = new VRChatLogMonitor(FishOnHook, OnFishPickupDetected);
-
-            _timeoutTimer = new System.Timers.Timer();
-            _timeoutTimer.Elapsed += HandleTimeout;
-            _timeoutTimer.AutoReset = false;
-
-            _statusDisplayTimer = new System.Timers.Timer();
-            _statusDisplayTimer.Interval = 100;
-            _statusDisplayTimer.Elapsed += UpdateStatusDisplay;
-            _statusDisplayTimer.AutoReset = true;
-
-            _reelBackTimer = new System.Timers.Timer();
-            _reelBackTimer.AutoReset = false;
-            _reelBackTimer.Elapsed += PerformReelBack;
-
             _delaySaveTimer = new();
             _delaySaveTimer.AutoReset = false;
             _delaySaveTimer.Elapsed += DelaySaveTimer_Elapsed;
-
-            _lastCycleEnd = DateTime.Now;
-            _lastCastTime = DateTime.MinValue;
+            _delaySaveTimer.SynchronizingObject = this;
 
             trackBarCastTime.Minimum = 0;
             trackBarCastTime.Maximum = 17;
             trackBarCastTime.Value = (int)((appSettings.castingTime ?? AppSettings.DefaultCastingTime) * 10.0);
-
-            UpdateParameters();
             UpdateCastTimeLabel();
+        }
+
+        private void CreateFisher()
+        {
+            if (_autoFisher != null)
+            {
+                _autoFisher.Dispose();
+            }
+
+            var castTime = trackBarCastTime.Value / 10.0;
+            _autoFisher = new AutoFisher("127.0.0.1", 9000, castTime);
+
+            // Subscribe to events from AutoFisher
+            _autoFisher.OnUpdateStatus += status => Invoke(() => UpdateStatusText(status));
+            _autoFisher.OnNotify += message => Invoke(() => _managers?.notificationManager.NotifyAll(message));
+
+            _autoFisher.OnCriticalError += errorMessage => Invoke(() =>
+                {
+                    if (_managers?.notificationManager.NotifyAll(errorMessage).success ?? false)
+                        return;
+                    MessageBox.Show(this, errorMessage, "严重错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                });
+
         }
 
         private void DelaySaveTimer_Elapsed(object? sender, ElapsedEventArgs e)
         {
             _settingsForm.SaveSettingsToFile(new AppSettings
             {
-                castingTime = GetCastTime(),
+                castingTime = trackBarCastTime.Value / 10.0,
             });
         }
 
@@ -130,631 +84,55 @@ namespace VRChatAutoFishing
 
         private void MainForm_Load(object? sender, EventArgs e)
         {
-            _logMonitor.StartMonitoring();
-            _statusDisplayTimer.Start();
-            SendClick(false);
+            // The AutoFisher will be created and started on button click.
         }
 
         private void btnToggle_Click(object? sender, EventArgs e)
         {
-            if (_isClosing) return;
+            _isFisherRunning = !_isFisherRunning;
 
-            bool toBeRunning = !_isRunning;
-
-            if (toBeRunning)
+            if (_isFisherRunning)
             {
                 btnSettings.Enabled = false;
-                Managers managers = _settingsForm.GetManagers();
-                _notificationManager = managers.notificationManager;
+                _managers = _settingsForm.GetManagers();
 
-                _isRunning = toBeRunning;
-                _fishCount = 0;
-                UpdateParameters();
-
-                _firstCast = true;
-                _currentAction = ActionState.kStartToCast;
-                UpdateStatus();
-
-                _stopEvent.Reset();
-                _fishingThread = new Thread(PerformFishingLoop);
-                _fishingThread.IsBackground = true;
-                _fishingThread.Start();
+                CreateFisher();
+                _autoFisher?.Start();
             }
             else
             {
-                _isRunning = toBeRunning;
-                EmergencyRelease();
+                _autoFisher?.Dispose();
+                _autoFisher = null;
                 btnSettings.Enabled = true;
             }
-            btnToggle.Text = _isRunning ? "停止" : "开始";
-        }
-
-        private void UpdateStatusDisplay(object? sender, ElapsedEventArgs e)
-        {
-            if (_isClosing || !_isRunning) return;
-
-            if (_currentAction == ActionState.kWaitForFish)
-            {
-                double elapsedSeconds = (DateTime.Now - _lastStatusSwitchTime).TotalSeconds;
-
-                if (_showingFishCount)
-                {
-                    if (elapsedSeconds >= 2.0)
-                    {
-                        _showingFishCount = false;
-                        _lastStatusSwitchTime = DateTime.Now;
-                        UpdateStatusText(ActionState.kWaitForFish);
-                    }
-                }
-                else
-                {
-                    if (elapsedSeconds >= 5.0)
-                    {
-                        _showingFishCount = true;
-                        _lastStatusSwitchTime = DateTime.Now;
-                        UpdateStatusText($"已钓:{_fishCount}");
-                    }
-                }
-            }
-        }
-
-        private void UpdateStatusText(ActionState state)
-        {
-            string text = state switch
-            {
-                ActionState.kIdle => "空闲",
-                ActionState.kPreparing => "准备中",
-                ActionState.kStartToCast => "开始抛竿",
-                ActionState.kCasting => "抛竿中",
-                ActionState.kWaitForFish => "等待鱼上钩",
-                ActionState.kReeling => "收杆中",
-                ActionState.kFinishedReel => "收杆完成",
-                ActionState.kStopped => "已停止",
-                ActionState.kReCasting => "重新抛竿",
-                ActionState.kReReeling => "重新收杆",
-
-                ActionState.kTimeoutReelSingle => "收杆超时(单次)",
-                ActionState.kTimeoutReel => "收杆超时",
-                _ => "未知状态",
-            };
-            UpdateStatusText(text);
+            btnToggle.Text = _isFisherRunning ? "停止" : "开始";
         }
 
         private void UpdateStatusText(string text)
         {
-            if (InvokeRequired)
-            {
-                if (!_isClosing)
-                {
-                    try
-                    {
-                        Invoke(new Action<string>(UpdateStatusText), text);
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // 忽略异常
-                    }
-                }
-                return;
-            }
-
-            if (!_isClosing)
-            {
-                Text = $"[{text}] - 自动钓鱼";
-            }
+            Text = $"[{text}] - 自动钓鱼";
         }
 
-        private void PerformFishingLoop()
-        {
-            try
-            {
-                while (_isRunning && !_isClosing)
-                {
-                    PerformCast();
-
-                    if (_isClosing || !_isRunning)
-                        break;
-
-                    DateTime waitStart = DateTime.Now;
-                    while (_isRunning && !_isClosing &&
-                           (DateTime.Now - waitStart).TotalSeconds < TIMEOUT_MINUTES * 60)
-                    {
-                        if (_stopEvent.WaitOne(100))
-                        {
-                            return;
-                        }
-
-                        if (!_isRunning || _isClosing)
-                            break;
-                    }
-                }
-            }
-            catch (ThreadAbortException)
-            {
-                Thread.ResetAbort();
-            }
-            catch (Exception ex)
-            {
-                if (!_isClosing)
-                {
-                    if (!_notificationManager.NotifyAll($"钓鱼线程错误: {ex.Message}").success)
-                    {
-                        MessageBox.Show($"钓鱼线程错误: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                }
-            }
-        }
-
-        private void btnHelp_Click(object? sender, EventArgs e)
-        {
-            if (_isClosing) return;
-            ShowHelpDialog();
-        }
-
-        private void ShowHelpDialog()
-        {
-            HelpForm helpForm = new HelpForm();
-            helpForm.ShowDialog();
-        }
-
-        private void EmergencyRelease()
-        {
-            _isReeling = false;
-            SendClick(false);
-            _currentAction = ActionState.kStopped;
-            _showingFishCount = false;
-            UpdateStatusText(_currentAction);
-
-            if (_timeoutTimer.Enabled)
-                _timeoutTimer.Stop();
-
-            if (_reelBackTimer.Enabled)
-                _reelBackTimer.Stop();
-
-            _stopEvent.Set();
-        }
-
-        private void UpdateStatus()
-        {
-            if (_showingFishCount && _currentAction == ActionState.kWaitForFish)
-                return;
-
-            UpdateStatusText(_currentAction);
-        }
-
-        private void SendClick(bool press)
-        {
-            if (!_isClosing)
-            {
-                _oscClient.SendUseRight(press ? 1 : 0);
-            }
-        }
-
-        private void UpdateParameters()
-        {
-            if (InvokeRequired)
-            {
-                if (!_isClosing)
-                {
-                    try
-                    {
-                        Invoke(new Action(UpdateParameters));
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // 忽略异常
-                    }
-                }
-                return;
-            }
-
-            _castTime = trackBarCastTime.Value / 10.0;
-        }
-
-        private double GetCastTime()
-        {
-            return _castTime;
-        }
+        private void btnHelp_Click(object? sender, EventArgs e) => new HelpForm().ShowDialog();
 
         private void UpdateCastTimeLabel()
         {
-            if (lblCastValue.InvokeRequired)
-            {
-                if (!_isClosing)
-                {
-                    try
-                    {
-                        lblCastValue.Invoke(new Action(UpdateCastTimeLabel));
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // 忽略异常
-                    }
-                }
-                return;
-            }
-
-            if (!_isClosing)
-            {
-                lblCastValue.Text = $"{GetCastTime():0.0}秒";
-            }
-        }
-
-        private void StartTimeoutTimer()
-        {
-            if (_timeoutTimer.Enabled)
-                _timeoutTimer.Stop();
-
-            _timeoutTimer.Interval = TIMEOUT_MINUTES * 60 * 1000;
-            _timeoutTimer.Start();
-        }
-
-        private void HandleTimeout(object? sender, ElapsedEventArgs e)
-        {
-            if (_isRunning && !_isClosing && _currentAction == ActionState.kWaitForFish)
-            {
-                _currentAction = ActionState.kTimeoutReel;
-                _showingFishCount = false;
-                UpdateStatusText(_currentAction);
-                PerformTimeoutReel();
-            }
-        }
-
-        // 新增：超时重钓机制 - 确保线收到位
-        private void PerformTimeoutReel()
-        {
-            if (_isProtected || _isClosing) return;
-
-            try
-            {
-                _isProtected = true;
-
-                // 第一步：抛竿2秒确保线收到位
-                _currentAction = ActionState.kReCasting;
-                UpdateStatusText(_currentAction);
-                SendClick(true);
-
-                DateTime castStart = DateTime.Now;
-                while (!_isClosing && (DateTime.Now - castStart).TotalSeconds < 2.0)
-                {
-                    if (_stopEvent.WaitOne(100))
-                    {
-                        SendClick(false);
-                        return;
-                    }
-                }
-                SendClick(false);
-
-                // 第二步：收杆20秒确保线完全收回
-                _currentAction = ActionState.kReReeling;
-                UpdateStatusText(_currentAction);
-                SendClick(true);
-
-                DateTime reelStart = DateTime.Now;
-                while (!_isClosing && (DateTime.Now - reelStart).TotalSeconds < 20.0)
-                {
-                    if (_stopEvent.WaitOne(100))
-                    {
-                        SendClick(false);
-                        return;
-                    }
-                }
-                SendClick(false);
-
-                // 第三步：重新开始钓鱼流程
-                if (!_isClosing)
-                {
-                    PerformCast();
-                    _notificationManager.NotifyAll("钓鱼超时，正在重试！如果此事件持续，请检查游戏状态。");
-                }
-            }
-            finally
-            {
-                _isProtected = false;
-            }
-        }
-
-        private void PerformReel()
-        {
-            if (_isClosing) return;
-
-            _currentAction = ActionState.kReeling;
-            _showingFishCount = false;
-            UpdateStatusText(_currentAction);
-            _isReeling = true;
-            SendClick(true);
-
-            // 重置收杆状态
-            _savedDataCount = 0;
-            _firstSavedDataTime = DateTime.MinValue;
-
-            DateTime startTime = DateTime.Now;
-            bool secondSavedDataDetected = false;
-
-            while (_isReeling && !_isClosing && (DateTime.Now - startTime).TotalSeconds < 30)
-            {
-                string content = _logMonitor.ReadNewContent();
-                if (content.Contains("SAVED DATA"))
-                {
-                    if (_savedDataCount == 0)
-                    {
-                        _savedDataCount = 1;
-                        _firstSavedDataTime = DateTime.Now;
-                        Console.WriteLine("检测到第一次SAVED DATA");
-                    }
-                    else if (_savedDataCount == 1)
-                    {
-                        double interval = (DateTime.Now - _firstSavedDataTime).TotalSeconds;
-                        if (interval >= 1.0)
-                        {
-                            _savedDataCount = 2;
-                            secondSavedDataDetected = true;
-                            Console.WriteLine($"检测到第二次SAVED DATA，间隔: {interval:F1}秒");
-                            break;
-                        }
-                    }
-                }
-
-                if (_savedDataCount == 1 && (DateTime.Now - _firstSavedDataTime).TotalSeconds > 10)
-                {
-                    Console.WriteLine("第一次SAVED DATA后10秒内未检测到第二次，视为超时");
-                    break;
-                }
-
-                if (_stopEvent.WaitOne(100))
-                {
-                    break;
-                }
-            }
-
-            _isReeling = false;
-            SendClick(false);
-
-            if (!_isClosing)
-            {
-                if (secondSavedDataDetected)
-                {
-                    _currentAction = ActionState.kFinishedReel;
-                    _fishCount++;
-                }
-                else if (_savedDataCount == 1)
-                {
-                    _currentAction = ActionState.kTimeoutReelSingle;
-                }
-                else
-                {
-                    _currentAction = ActionState.kTimeoutReel;
-                    _notificationManager.NotifyAll("鱼已上钩但收杆仍超时，未检测到SAVED DATA事件！如果此事件持续，请检查游戏状态。");
-                }
-                _showingFishCount = false;
-                UpdateStatusText(_currentAction);
-            }
-        }
-
-        private void PerformReelBack(object? sender, ElapsedEventArgs e)
-        {
-            if (_isClosing || !_isRunning) return;
-
-            try
-            {
-                Console.WriteLine($"执行回拉动作，持续时间: {_reelBackTime}秒");
-
-                SendClick(true);
-
-                DateTime reelStart = DateTime.Now;
-                while (!_isClosing && _isRunning &&
-                       (DateTime.Now - reelStart).TotalSeconds < _reelBackTime)
-                {
-                    if (_stopEvent.WaitOne(100))
-                    {
-                        SendClick(false);
-                        return;
-                    }
-                }
-
-                SendClick(false);
-
-                Console.WriteLine("回拉动作完成");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"回拉动作错误: {ex.Message}");
-            }
-        }
-
-        private void OnFishPickupDetected()
-        {
-            if (_isRunning && !_isProtected && !_isClosing && (DateTime.Now - _lastCycleEnd).TotalSeconds >= 2)
-            {
-                FishOnHook();
-            }
-        }
-
-        private void PerformCast()
-        {
-            if (_isClosing) return;
-
-            if (!_firstCast)
-            {
-                _currentAction = ActionState.kPreparing;
-                _showingFishCount = false;
-                UpdateStatusText(_currentAction);
-
-                if (_stopEvent.WaitOne(500))
-                {
-                    return;
-                }
-            }
-            else
-            {
-                _firstCast = false;
-            }
-
-            _currentAction = ActionState.kCasting;
-            _showingFishCount = false;
-            UpdateStatusText(_currentAction);
-
-            double castDuration = GetCastTime();
-
-            if (castDuration < 0.2)
-            {
-                _actualCastTime = 0.2;
-
-                if (castDuration < 0.1)
-                {
-                    _reelBackTime = 0.5;
-                }
-                else
-                {
-                    _reelBackTime = 0.3;
-                }
-
-                Console.WriteLine($"特殊抛竿: 抛{_actualCastTime}秒, {_reelBackTime}秒后回拉{_reelBackTime}秒");
-
-                SendClick(true);
-
-                DateTime castStart = DateTime.Now;
-                while (!_isClosing && (DateTime.Now - castStart).TotalSeconds < _actualCastTime)
-                {
-                    if (_stopEvent.WaitOne(100))
-                    {
-                        SendClick(false);
-                        return;
-                    }
-                }
-
-                SendClick(false);
-
-                if (!_isClosing)
-                {
-                    _currentAction = ActionState.kWaitForFish;
-                    _showingFishCount = false;
-                    _lastStatusSwitchTime = DateTime.Now;
-                    _lastCastTime = DateTime.Now;
-                    UpdateStatusText(_currentAction);
-
-                    _reelBackTimer.Interval = 1000;
-                    _reelBackTimer.Start();
-
-                    StartTimeoutTimerAfterReelBack();
-                }
-            }
-            else
-            {
-                SendClick(true);
-
-                DateTime castStart = DateTime.Now;
-                while (!_isClosing && (DateTime.Now - castStart).TotalSeconds < castDuration)
-                {
-                    if (_stopEvent.WaitOne(100))
-                    {
-                        SendClick(false);
-                        return;
-                    }
-                }
-
-                SendClick(false);
-
-                if (!_isClosing)
-                {
-                    _currentAction = ActionState.kWaitForFish;
-                    _showingFishCount = false;
-                    _lastStatusSwitchTime = DateTime.Now;
-                    _lastCastTime = DateTime.Now;
-                    UpdateStatusText(_currentAction);
-                    StartTimeoutTimer();
-                }
-            }
-        }
-
-        private void StartTimeoutTimerAfterReelBack()
-        {
-            double totalWaitTime = 1000 + (_reelBackTime * 1000) + 100;
-
-            System.Timers.Timer delayTimer = new System.Timers.Timer(totalWaitTime);
-            delayTimer.AutoReset = false;
-            delayTimer.Elapsed += (s, e) =>
-            {
-                if (!_isClosing && _isRunning)
-                {
-                    StartTimeoutTimer();
-                }
-                delayTimer.Dispose();
-            };
-            delayTimer.Start();
-        }
-
-        private void FishOnHook()
-        {
-            if ((DateTime.Now - _lastCastTime).TotalSeconds < 3.0)
-            {
-                Console.WriteLine("忽略抛竿后3秒内的SAVED DATA事件");
-                return;
-            }
-
-            if (!_isRunning || _isProtected || _isClosing || (DateTime.Now - _lastCycleEnd).TotalSeconds < 2)
-                return;
-
-            try
-            {
-                _isProtected = true;
-                _lastCycleEnd = DateTime.Now;
-                PerformReel();
-                if (!_isClosing)
-                {
-                    PerformCast();
-                }
-            }
-            finally
-            {
-                _isProtected = false;
-                _lastCycleEnd = DateTime.Now;
-            }
+            lblCastValue.Text = $"{trackBarCastTime.Value / 10.0:0.0}秒";
         }
 
         private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            _isClosing = true;
-
-            _statusDisplayTimer?.Stop();
-            _statusDisplayTimer?.Dispose();
-
-            _reelBackTimer?.Stop();
-            _reelBackTimer?.Dispose();
-
-            EmergencyRelease();
-
-            _timeoutTimer?.Stop();
-            _timeoutTimer?.Dispose();
-
-            _logMonitor?.StopMonitoring();
-
-            if (_fishingThread != null && _fishingThread.IsAlive)
-            {
-                _stopEvent.Set();
-
-                if (!_fishingThread.Join(2000))
-                {
-                    try
-                    {
-                        _fishingThread.Abort();
-                    }
-                    catch
-                    {
-                        // 忽略中止异常
-                    }
-                }
-            }
-
-            _oscClient?.Dispose();
-            _stopEvent?.Close();
+            _autoFisher?.Dispose();
+            _delaySaveTimer?.Dispose();
         }
 
         private void trackBarCastTime_Scroll(object? sender, EventArgs e)
         {
-            if (_isClosing) return;
-            UpdateParameters();
             UpdateCastTimeLabel();
+            if (_autoFisher != null)
+            {
+                _autoFisher.CastTime = trackBarCastTime.Value / 10.0;
+            }
             DelayToSaveSettings();
         }
 
@@ -762,10 +140,6 @@ namespace VRChatAutoFishing
         {
             ClearDelayToSaveSettings();
             _settingsForm.ShowDialog();
-            _settingsForm.SaveSettingsToFile(new AppSettings
-            {
-                castingTime = GetCastTime(),
-            });
         }
 
         // Windows Form Designer generated code

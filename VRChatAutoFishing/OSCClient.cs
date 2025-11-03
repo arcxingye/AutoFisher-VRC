@@ -65,7 +65,6 @@ namespace VRChatAutoFishing
 
         public void Dispose()
         {
-            _udpClient?.Close();
             _udpClient?.Dispose();
         }
     }

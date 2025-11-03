@@ -1,0 +1,186 @@
+using System;
+using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace VRChatAutoFishing
+{
+    /// <summary>
+    /// Provides a dedicated single-threaded SynchronizationContext and message loop.
+    /// Implements ISynchronizeInvoke to allow binding to System.Timers.Timer and other components.
+    /// </summary>
+    internal class SingleThreadSynchronizationContext : SynchronizationContext, ISynchronizeInvoke, IDisposable
+    {
+        private readonly BlockingCollection<KeyValuePair<SendOrPostCallback, object?>> _messageQueue = new();
+        private readonly Thread _thread;
+        private readonly CancellationTokenSource _cts = new();
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SingleThreadSynchronizationContext"/> class
+        /// and starts its dedicated thread.
+        /// </summary>
+        /// <param name="threadName">The name of the dedicated thread.</param>
+        public SingleThreadSynchronizationContext(string threadName)
+        {
+            _thread = new Thread(RunMessageLoop)
+            {
+                Name = threadName,
+                IsBackground = true
+            };
+            _thread.Start();
+        }
+
+        /// <summary>
+        /// The main message loop for the dedicated thread.
+        /// </summary>
+        private void RunMessageLoop()
+        {
+            SetSynchronizationContext(this);
+
+            try
+            {
+                // The loop will block on GetConsumingEnumerable until a new message arrives or the collection is completed.
+                foreach (var message in _messageQueue.GetConsumingEnumerable(_cts.Token))
+                {
+                    message.Key(message.Value);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The loop was gracefully cancelled.
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously dispatches a message to the synchronization context.
+        /// </summary>
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            if (!_cts.IsCancellationRequested)
+            {
+                try
+                {
+                    _messageQueue.Add(new KeyValuePair<SendOrPostCallback, object?>(d, state));
+                }
+                catch (InvalidOperationException)
+                {
+                    // This can happen if Stop() is called concurrently. It's safe to ignore.
+                }
+            }
+        }
+
+        /// <summary>
+        /// Synchronously dispatches a message to the synchronization context and waits for it to complete.
+        /// </summary>
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            // If we are already on the synchronization thread, just execute the delegate directly.
+            if (Thread.CurrentThread == _thread)
+            {
+                d(state);
+                return;
+            }
+
+            using var completedEvent = new ManualResetEvent(false);
+            Post(s =>
+            {
+                try
+                {
+                    d(s);
+                }
+                finally
+                {
+                    completedEvent.Set();
+                }
+            }, state);
+            completedEvent.WaitOne();
+        }
+
+        /// <summary>
+        /// Stops the message loop and signals the thread to terminate.
+        /// </summary>
+        public void Stop()
+        {
+            if (!_cts.IsCancellationRequested)
+            {
+                // Mark the collection as not accepting any more additions.
+                _messageQueue.CompleteAdding();
+                // Cancel the token to unblock GetConsumingEnumerable.
+                _cts.Cancel();
+            }
+        }
+
+        /// <summary>
+        /// Stops the message loop and waits for the thread to exit.
+        /// </summary>
+        public void Dispose()
+        {
+            Stop();
+            // Wait for the thread to finish processing any remaining messages.
+            if (Thread.CurrentThread != _thread)
+            {
+                _thread.Join();
+            }
+            _messageQueue.Dispose();
+            _cts.Dispose();
+            GC.SuppressFinalize(this);
+        }
+
+        #region ISynchronizeInvoke Implementation
+
+        /// <summary>
+        /// Gets a value indicating whether the caller must call an invoke method when making method calls to the control because the caller is on a different thread than the one the control was created on.
+        /// </summary>
+        public bool InvokeRequired => Thread.CurrentThread != _thread;
+
+        /// <summary>
+        /// Asynchronously executes the delegate on the thread that this context belongs to.
+        /// </summary>
+        public IAsyncResult BeginInvoke(Delegate method, object?[]? args)
+        {
+            var tcs = new TaskCompletionSource<object?>();
+            Post(_ =>
+            {
+                try
+                {
+                    var result = method.DynamicInvoke(args);
+                    tcs.SetResult(result);
+                }
+                catch (Exception ex)
+                {
+                    tcs.SetException(ex.InnerException ?? ex);
+                }
+            }, null);
+            return tcs.Task;
+        }
+
+        /// <summary>
+        /// Waits for the process begun by the preceding call to BeginInvoke to complete, and then returns the value generated by the process.
+        /// </summary>
+        public object? EndInvoke(IAsyncResult result)
+        {
+            var task = (Task<object?>)result;
+            // GetAwaiter().GetResult() will re-throw the original exception if the task failed.
+            return task.GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Synchronously executes the delegate on the thread that this context belongs to.
+        /// </summary>
+        public object? Invoke(Delegate method, object?[]? args)
+        {
+            if (!InvokeRequired)
+            {
+                return method.DynamicInvoke(args);
+            }
+
+            object? result = null;
+            // Use Send to wait for the result.
+            Send(_ => { result = method.DynamicInvoke(args); }, null);
+            return result;
+        }
+
+        #endregion
+    }
+}
