@@ -71,33 +71,6 @@ namespace VRChatAutoFishing
         }
 
         /// <summary>
-        /// Synchronously dispatches a message to the synchronization context and waits for it to complete.
-        /// </summary>
-        public override void Send(SendOrPostCallback d, object? state)
-        {
-            // If we are already on the synchronization thread, just execute the delegate directly.
-            if (Thread.CurrentThread == _thread)
-            {
-                d(state);
-                return;
-            }
-
-            using var completedEvent = new ManualResetEvent(false);
-            Post(s =>
-            {
-                try
-                {
-                    d(s);
-                }
-                finally
-                {
-                    completedEvent.Set();
-                }
-            }, state);
-            completedEvent.WaitOne();
-        }
-
-        /// <summary>
         /// Stops the message loop and signals the thread to terminate.
         /// </summary>
         public void Stop()
@@ -175,10 +148,9 @@ namespace VRChatAutoFishing
                 return method.DynamicInvoke(args);
             }
 
-            object? result = null;
-            // Use Send to wait for the result.
-            Send(_ => { result = method.DynamicInvoke(args); }, null);
-            return result;
+            // To implement synchronous invocation, we can use the asynchronous version
+            // and wait for it to complete. This reuses the logic from BeginInvoke/EndInvoke.
+            return EndInvoke(BeginInvoke(method, args));
         }
 
         #endregion

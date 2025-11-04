@@ -1,4 +1,5 @@
 ﻿using System;
+using System.ComponentModel;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
@@ -6,9 +7,10 @@ using System.Windows.Forms;
 
 namespace VRChatAutoFishing
 {
-    public partial class HelpForm : Form
+    [DesignerCategory("Code")]
+    public class HelpDialog : Form
     {
-        public HelpForm()
+        public HelpDialog()
         {
             InitializeComponent();
             SetupHelpForm();

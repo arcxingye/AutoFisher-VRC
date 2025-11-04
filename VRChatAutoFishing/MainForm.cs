@@ -135,9 +135,9 @@ namespace VRChatAutoFishing
 
         private void btnHelp_Click(object? sender, EventArgs e)
         {
-            HelpForm helpForm = new();
-            helpForm.ShowDialog();
-            helpForm.Dispose();
+            HelpDialog helpDialog = new();
+            helpDialog.ShowDialog();
+            helpDialog.Dispose();
         }
 
         private void UpdateCastTimeLabel()

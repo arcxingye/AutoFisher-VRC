@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
@@ -11,8 +11,8 @@
     <AssemblyCompany>个人开发</AssemblyCompany>
     <AssemblyProduct>VRChatAutoFishing</AssemblyProduct>
     <AssemblyCopyright>Copyright © arcxingye 2024</AssemblyCopyright>
-    <AssemblyVersion>1.5.4.0</AssemblyVersion>
-    <FileVersion>1.5.4.0</FileVersion>
+    <AssemblyVersion>1.5.5.0</AssemblyVersion>
+    <FileVersion>1.5.5.0</FileVersion>
     <Configurations>Debug;Release;ReleaseWithRuntime</Configurations>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <PublishReadyToRun>true</PublishReadyToRun>
@@ -45,21 +45,6 @@
     <EmbeddedResource Include="Resources\help_image1.jpg" />
     <EmbeddedResource Include="Resources\help_image2.jpg" />
     <EmbeddedResource Include="Resources\help_image3.jpg" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Update="Properties\Resources.Designer.cs">
-      <DesignTime>True</DesignTime>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>Resources.resx</DependentUpon>
-    </Compile>
-  </ItemGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Update="Properties\Resources.resx">
-      <Generator>ResXFileCodeGenerator</Generator>
-      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
-    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

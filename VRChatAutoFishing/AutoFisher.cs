@@ -28,6 +28,7 @@ namespace VRChatAutoFishing
             kCasting,
             kWaitForFish,
             kReeling,
+            kReelingHasGotOutOfWater,
             kFinishedReel,
             kStopped,
             kReCasting,
@@ -35,18 +36,20 @@ namespace VRChatAutoFishing
             // Exceptions
             kTimeoutReelSingle,
             kTimeoutReel,
+            kDistrubed,
         }
 
         private CancellationTokenSource _cts = new();
         private readonly SingleThreadSynchronizationContext _context = new("AutoFisherWorkerThread");
 
-        private bool _isRunning = false;
+        private bool _alreadyRunning = false;
         private ActionState _currentAction = ActionState.kIdle;
-        private DateTime _lastCycleEnd;
+        //private DateTime _lastCycleEnd;
         private DateTime _last_castTime;
         private readonly System.Timers.Timer _timeoutTimer;
         private readonly System.Timers.Timer _statusDisplayTimer;
         private readonly System.Timers.Timer _reelBackTimer;
+        private readonly System.Timers.Timer _reelTimeoutTimer;
 
         private readonly OSCClient _oscClient;
         private readonly VRChatLogMonitor _logMonitor;
@@ -54,6 +57,7 @@ namespace VRChatAutoFishing
 
         public double CastTime { get; set; }
         private const double TIMEOUT_MINUTES = 3.0;
+        private const int MAX_REEL_TIME_SECONDS = 30;
 
         // 钓鱼统计相关变量
         private int _fishCount = 0;
@@ -74,7 +78,7 @@ namespace VRChatAutoFishing
             _oscClient = new OSCClient(ip, port);
             _logMonitor = new VRChatLogMonitor(
                 () => _context.Post(_ => FishOnHook(), null),
-                () => _context.Post(_ => OnFishPickupDetected(), null)
+                () => _context.Post(_ => FishGotOut(), null)
             );
 
             _timeoutTimer = new System.Timers.Timer { AutoReset = false, SynchronizingObject = _context };
@@ -86,7 +90,10 @@ namespace VRChatAutoFishing
             _reelBackTimer = new System.Timers.Timer { AutoReset = false, SynchronizingObject = _context };
             _reelBackTimer.Elapsed += PerformReelBack;
 
-            _lastCycleEnd = DateTime.Now;
+            _reelTimeoutTimer = new System.Timers.Timer { AutoReset = false, SynchronizingObject = _context };
+            _reelTimeoutTimer.Elapsed += PerformReelingTimeout;
+
+            //_lastCycleEnd = DateTime.Now;
             _last_castTime = DateTime.MinValue;
 
             // Ensure click is released
@@ -98,8 +105,8 @@ namespace VRChatAutoFishing
         {
             _context.Post(_ =>
             {
-                if (_isRunning) return;
-                _isRunning = true;
+                if (_alreadyRunning) return;
+                _alreadyRunning = true;
                 _logMonitor.StartMonitoring();
                 _statusDisplayTimer.Start();
                 _fishCount = 0;
@@ -119,6 +126,7 @@ namespace VRChatAutoFishing
             _statusDisplayTimer.Stop();
             _timeoutTimer.Stop();
             _reelBackTimer.Stop();
+            _reelTimeoutTimer.Stop();
             SendClick(false); // Ensure click is released
             UpdateStatusText(ActionState.kStopped);
         }
@@ -127,15 +135,18 @@ namespace VRChatAutoFishing
         {
             Stop();
             _context.Dispose();
+            _cts.Dispose();
             _oscClient.Dispose();
             _timeoutTimer.Dispose();
             _statusDisplayTimer.Dispose();
             _reelBackTimer.Dispose();
+            _reelTimeoutTimer.Dispose();
         }
 
         private void UpdateStatusDisplay(object? sender, ElapsedEventArgs e)
         {
-            if (_cts.IsCancellationRequested) return;
+            var token = _cts.Token;
+            if (token.IsCancellationRequested) return;
 
             if (_currentAction == ActionState.kWaitForFish)
             {
@@ -163,10 +174,7 @@ namespace VRChatAutoFishing
         }
 
         // To display simple text status
-        private void UpdateStatusText(string text)
-        {
-            OnUpdateStatus?.Invoke(text);
-        }
+        private void UpdateStatusText(string text) => OnUpdateStatus?.Invoke(text);
 
         // This will also update _currentAction
         private void UpdateStatusText(ActionState state)
@@ -181,12 +189,14 @@ namespace VRChatAutoFishing
                     ActionState.kCasting => "抛竿中",
                     ActionState.kWaitForFish => "等待鱼上钩",
                     ActionState.kReeling => "收杆中",
-                    ActionState.kFinishedReel => "收杆完成",
+                    ActionState.kReelingHasGotOutOfWater => "抄鱼中",
+                    ActionState.kFinishedReel => "鱼+1",
                     ActionState.kStopped => "已停止",
                     ActionState.kReCasting => "重新抛竿",
                     ActionState.kReReeling => "重新收杆",
                     ActionState.kTimeoutReelSingle => "收杆超时(单次)",
                     ActionState.kTimeoutReel => "收杆超时",
+                    ActionState.kDistrubed => "被打断",
                     _ => "未知状态",
                 }
             );
@@ -197,16 +207,17 @@ namespace VRChatAutoFishing
             _oscClient.SendUseRight(press ? 1 : 0);
         }
 
-        private void StartTimeoutTimer()
+        private void PressForDuration(int ms)
         {
-            _timeoutTimer.Stop();
-            _timeoutTimer.Interval = TIMEOUT_MINUTES * 60 * 1000;
-            _timeoutTimer.Start();
+            SendClick(true);
+            _cts.Token.WaitHandle.WaitOne(ms);
+            SendClick(false);
         }
 
         private void HandleTimeout(object? sender, ElapsedEventArgs e)
         {
-            if (_currentAction != ActionState.kWaitForFish || _cts.IsCancellationRequested) return;
+            var token = _cts.Token;
+            if (_currentAction != ActionState.kWaitForFish || token.IsCancellationRequested) return;
 
             UpdateStatusText(ActionState.kTimeoutReel);
             PerformTimeoutReel();
@@ -217,101 +228,60 @@ namespace VRChatAutoFishing
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
 
+            // 重新抛竿并收杆，确保可以回到正常位置
             UpdateStatusText(ActionState.kReCasting);
-            SendClick(true);
-            token.WaitHandle.WaitOne(2000);
-            SendClick(false);
+            PressForDuration(2000);
             if (token.IsCancellationRequested) return;
 
             UpdateStatusText(ActionState.kReReeling);
-            SendClick(true);
-            token.WaitHandle.WaitOne(20000);
-            SendClick(false);
+            PressForDuration(20000);
             if (token.IsCancellationRequested) return;
 
             OnNotify?.Invoke("钓鱼超时，正在重试！如果此事件持续，请检查游戏状态。");
             PerformCast();
         }
 
-        private void PerformReel()
+        private void PerformReelingTimeout(object? sender, ElapsedEventArgs e)
         {
+            // stop reeling
+            SendClick(false);
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
 
-            UpdateStatusText(ActionState.kReeling);
-            SendClick(true);
-
-            _savedDataCount = 0;
-            _firstSavedDataTime = DateTime.MinValue;
-
-            DateTime startTime = DateTime.Now;
-            bool secondSavedDataDetected = false;
-
-            while ((DateTime.Now - startTime).TotalSeconds < 30)
+            if (_currentAction == ActionState.kReeling)
             {
-                if (token.IsCancellationRequested) return;
-
-                string content = _logMonitor.ReadNewContent();
-                if (content.Contains("SAVED DATA"))
-                {
-                    if (_savedDataCount == 0)
-                    {
-                        _savedDataCount = 1;
-                        _firstSavedDataTime = DateTime.Now;
-                    }
-                    else if (_savedDataCount == 1)
-                    {
-                        double interval = (DateTime.Now - _firstSavedDataTime).TotalSeconds;
-                        if (interval >= 1.0)
-                        {
-                            _savedDataCount = 2;
-                            secondSavedDataDetected = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (_savedDataCount == 1 && (DateTime.Now - _firstSavedDataTime).TotalSeconds > 10)
-                {
-                    break;
-                }
-                token.WaitHandle.WaitOne(100);
+                Console.WriteLine("Reeling Timeout, Casting again");
+                // No fish caught. We are distrubed by the unexpected log.
+                UpdateStatusText(ActionState.kDistrubed);
+                // Perform next cast immediately
+                PerformCast();
             }
-
-            SendClick(false);
-
-            if (token.IsCancellationRequested) return;
-
-            if (secondSavedDataDetected)
+            else if (_currentAction == ActionState.kReelingHasGotOutOfWater)
             {
-                UpdateStatusText(ActionState.kFinishedReel);
-                _fishCount++;
+                Console.WriteLine("Reeling Timeout after out of water");
+                PerformTimeoutReel();
             }
-            else if (_savedDataCount == 1)
+            else if (_currentAction == ActionState.kWaitForFish)
             {
-                UpdateStatusText(ActionState.kTimeoutReelSingle);
+                // 上次入桶后没有加经验，视为假入桶，继续收杆
+                Console.WriteLine("Fake in bucket! Reset to OutOfWater");
+                _fishCount--;
+                SendClick(true);
+                _reelBackTimer.Stop(); // 可能上次抛竿是短抛竿，停止回拉计时器
+                _reelTimeoutTimer.Interval = MAX_REEL_TIME_SECONDS * 1000;
+                _reelTimeoutTimer.Start();
+                UpdateStatusText(ActionState.kReelingHasGotOutOfWater);
             }
             else
             {
-                UpdateStatusText(ActionState.kTimeoutReel);
-                OnNotify?.Invoke("鱼已上钩但收杆仍超时！如果此事件持续，请检查游戏状态。");
+                Console.WriteLine("Reeling Timeout: Unexpected State!");
+                OnCriticalError?.Invoke("收杆超时但状态异常！请检查程序状态。");
             }
         }
 
         private void PerformReelBack(object? sender, ElapsedEventArgs e)
         {
-            var token = _cts.Token;
-            if (token.IsCancellationRequested) return;
-            SendClick(true);
-            token.WaitHandle.WaitOne((int)(_reelBackTime * 1000));
-            SendClick(false);
-        }
-
-        private void OnFishPickupDetected()
-        {
-            if (_currentAction != ActionState.kWaitForFish || _cts.IsCancellationRequested) return;
-            if ((DateTime.Now - _lastCycleEnd).TotalSeconds < 2) return;
-            FishOnHook();
+            PressForDuration((int)(_reelBackTime * 1000));
         }
 
         // Don't call this in a separate timer directly to avoid dead loop in task queue
@@ -319,6 +289,7 @@ namespace VRChatAutoFishing
         {
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
+            Console.WriteLine("PerformCast");
 
             if (!_firstCast)
             {
@@ -340,70 +311,100 @@ namespace VRChatAutoFishing
                 _actual_castTime = 0.2;
                 _reelBackTime = (castDuration < 0.1) ? 0.5 : 0.3;
 
-                SendClick(true);
-                token.WaitHandle.WaitOne((int)(_actual_castTime * 1000));
-                SendClick(false);
+                PressForDuration((int)(_actual_castTime * 1000));
+                if (token.IsCancellationRequested) return;
 
-                if (!token.IsCancellationRequested)
-                {
-                    _reelBackTimer.Interval = 1000;
-                    _reelBackTimer.Start();
-                    StartTimeoutTimerAfterReelBack();
-                }
+                _reelBackTimer.Interval = 1000;
+                _reelBackTimer.Start();
+                // Delay starting the timeout timer until after the reel back action is complete.
+                double delay = 1000 + (_reelBackTime * 1000) + 100;
+                StartTimeoutTimer(delay);
             }
             else
             {
-                SendClick(true);
-                token.WaitHandle.WaitOne((int)(castDuration * 1000));
-                SendClick(false);
-
-                if (!token.IsCancellationRequested)
-                {
-                    StartTimeoutTimer();
-                }
+                PressForDuration((int)(castDuration * 1000));
+                if (token.IsCancellationRequested) return;
+                StartTimeoutTimer();
             }
 
-            if (!token.IsCancellationRequested)
-            {
-                UpdateStatusText(ActionState.kWaitForFish);
-                _lastStatusSwitchTime = DateTime.Now;
-                _last_castTime = DateTime.Now;
-            }
+            if (token.IsCancellationRequested) return;
+            UpdateStatusText(ActionState.kWaitForFish);
+            _lastStatusSwitchTime = DateTime.Now;
+            _last_castTime = DateTime.Now;
+
         }
 
-        private void StartTimeoutTimerAfterReelBack()
+        private void StartTimeoutTimer(double delay = 0)
         {
-            double totalWaitTime = 1000 + (_reelBackTime * 1000) + 100;
-            var delayTimer = new System.Timers.Timer(totalWaitTime)
+            _timeoutTimer.Stop();
+            double interval = TIMEOUT_MINUTES * 60 * 1000;
+            if (delay > 0)
             {
-                AutoReset = false,
-                SynchronizingObject = _context
-            };
-            delayTimer.Elapsed += (s, e) =>
-            {
-                if (!_cts.IsCancellationRequested)
-                {
-                    StartTimeoutTimer();
-                }
-                delayTimer.Dispose();
-            };
-            delayTimer.Start();
+                interval += delay;
+            }
+            _timeoutTimer.Interval = Math.Max(1, interval);
+            _timeoutTimer.Start();
         }
 
         private void FishOnHook()
         {
-            if (_currentAction != ActionState.kWaitForFish || _cts.IsCancellationRequested) return;
-            if ((DateTime.Now - _last_castTime).TotalSeconds < 3.0) return;
-            if ((DateTime.Now - _lastCycleEnd).TotalSeconds < 2) return;
+            var token = _cts.Token;
+            if (token.IsCancellationRequested) return;
+            Console.WriteLine("FishOnHook");
+            if ((DateTime.Now - _last_castTime).TotalSeconds < 3.0)
+            {
+                // 抛竿后3秒内上钩，视为分数统计保存事件，此时可知上次钓鱼是真的入了桶
+                if (_currentAction == ActionState.kWaitForFish)
+                {
+                    Console.WriteLine("Last fish is OK");
+                    _reelTimeoutTimer.Stop();
+                }
+                return;
+            }
+            //if ((DateTime.Now - _lastCycleEnd).TotalSeconds < 2) return;
 
             _timeoutTimer.Stop();
-            _lastCycleEnd = DateTime.Now;
+            //_lastCycleEnd = DateTime.Now;
 
-            PerformReel();
-
-            if (!_cts.IsCancellationRequested)
+            if (_currentAction == ActionState.kWaitForFish)
             {
+                Console.WriteLine("Start to reel");
+                UpdateStatusText(ActionState.kReeling);
+                SendClick(true); // We do Reeling until we got fish out of water or timeout
+                _reelTimeoutTimer.Stop();
+                _reelTimeoutTimer.Interval = MAX_REEL_TIME_SECONDS * 1000;
+                _reelTimeoutTimer.Start();
+                return;
+            }
+            if (_currentAction == ActionState.kReelingHasGotOutOfWater)
+            {
+                Console.WriteLine("(Assume) Fish in bucket");
+                _reelTimeoutTimer.Stop();
+                SendClick(false);
+                UpdateStatusText(ActionState.kFinishedReel);
+                _fishCount++;
+                // 不等XP了，直接下一杆
                 PerformCast();
+                // 如果我们错了，那么等于我们放开了 500ms 然后又拉了至少200ms
+                // 此时再放 0.5s，应该不至于逃脱（如果逃脱，那么重新收杆会失败，走抛竿程序）
+                _reelTimeoutTimer.Interval = 500;
+                _reelTimeoutTimer.Start();
+                return;
+            }
+
+            Console.WriteLine("FishOnHook: Unexpected State!");
+            //PerformCast();
+        }
+
+        private void FishGotOut()
+        {
+            Console.WriteLine("FishGotOut");
+            var token = _cts.Token;
+            if (token.IsCancellationRequested) return;
+            if (_currentAction == ActionState.kReeling)
+            {
+                Console.WriteLine("Fish got out of water during reeling");
+                UpdateStatusText(ActionState.kReelingHasGotOutOfWater);
             }
         }
     }

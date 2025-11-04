@@ -55,12 +55,14 @@ namespace VRChatAutoFishing
                     ProcessLogChanges();
                 }
             };
-            _watcher.EnableRaisingEvents = true;
+            
+            // Initial check and skip existing content
+            UpdateLogFile();
+            ReadNewContent();
 
             // Start a background task to periodically check for new log files
             Task.Run(() => PeriodicLogFileCheck(token), token);
-            // Initial check
-            UpdateLogFile();
+            _watcher.EnableRaisingEvents = true;
         }
 
         public void StopMonitoring()
@@ -88,7 +90,7 @@ namespace VRChatAutoFishing
                 {
                     UpdateLogFile();
                     ProcessLogChanges();
-                    await Task.Delay(TimeSpan.FromSeconds(1), token);
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), token);
                 }
                 catch (TaskCanceledException)
                 {
@@ -107,16 +109,24 @@ namespace VRChatAutoFishing
                 return;
 
             string content = ReadNewContent();
-            if (!string.IsNullOrEmpty(content))
-            {
-                if (content.Contains("SAVED DATA"))
-                {
-                    OnDataSaved?.Invoke();
-                }
+            if (string.IsNullOrEmpty(content))
+                return;
 
-                if (content.Contains("Fish Pickup attached to rod Toggles(True)"))
+            // 使用StringReader逐行处理新内容，确保每个事件都被捕获
+            using (var reader = new StringReader(content))
+            {
+                string? line;
+                while ((line = reader.ReadLine()) != null)
                 {
-                    OnFishPickup?.Invoke();
+                    if (line.Contains("SAVED DATA"))
+                    {
+                        OnDataSaved?.Invoke();
+                    }
+
+                    if (line.Contains("Fish Pickup attached to rod Toggles(True)"))
+                    {
+                        OnFishPickup?.Invoke();
+                    }
                 }
             }
         }
@@ -187,11 +197,29 @@ namespace VRChatAutoFishing
 
                         stream.Seek(_filePosition, SeekOrigin.Begin);
 
+                        // 使用StreamReader来处理文本和编码
                         using (var reader = new StreamReader(stream))
                         {
-                            string content = reader.ReadToEnd();
-                            _filePosition = stream.Position;
-                            return content;
+                            string newContent = reader.ReadToEnd();
+                            if (string.IsNullOrEmpty(newContent))
+                                return string.Empty;
+
+                            int lastNewLineIndex = newContent.LastIndexOf('\n');
+
+                            // 如果没有找到换行符，说明新内容只包含一个不完整的行
+                            // 我们暂时不处理它，等待下一次读取
+                            if (lastNewLineIndex == -1)
+                                return string.Empty;
+
+                            // 提取直到最后一个换行符为止的所有完整行
+                            string contentToProcess = newContent.Substring(0, lastNewLineIndex + 1);
+
+                            // 计算这些完整行所占的字节数，并更新文件位置指针
+                            // 这确保了多字节字符（如中文）被正确处理
+                            int bytesToAdvance = reader.CurrentEncoding.GetByteCount(contentToProcess);
+                            _filePosition += bytesToAdvance;
+
+                            return contentToProcess;
                         }
                     }
                 }
