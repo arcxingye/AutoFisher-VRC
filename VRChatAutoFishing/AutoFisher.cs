@@ -375,8 +375,8 @@ namespace VRChatAutoFishing
                 Console.WriteLine("FishOnHook: disabled cast, just release for a while");
                 ReleaseForDuration(50);
                 // 模拟一个极短的抛竿动作
-                PressForDuration(200);
-                ReleaseForDuration(50);
+                //PressForDuration(200);
+                //ReleaseForDuration(50);
                 return;
             }
             Console.WriteLine("FishOnHook");
