@@ -34,7 +34,6 @@ namespace VRChatAutoFishing
             kReCasting,
             kReReeling,
             // Exceptions
-            kTimeoutReelSingle,
             kTimeoutReel,
             kDistrubed,
         }
@@ -55,7 +54,20 @@ namespace VRChatAutoFishing
         private readonly VRChatLogMonitor _logMonitor;
         private bool _firstCast = true;
 
-        public double CastTime { get; set; }
+        private double _castTime;
+        public const double kDisabledCastTime = -1.0;
+        public double CastTime
+        {
+            get { return _castTime; }
+            set
+            {
+                // Cannot set to disabled during operation
+                if (value == kDisabledCastTime)
+                    return;
+                _castTime = value;
+            }
+        }
+
         private const double TIMEOUT_MINUTES = 3.0;
         private const int MAX_REEL_TIME_SECONDS = 30;
 
@@ -64,17 +76,13 @@ namespace VRChatAutoFishing
         private bool _showingFishCount = false;
         private DateTime _lastStatusSwitchTime = DateTime.Now;
 
-        // 收杆状态跟踪
-        private int _savedDataCount = 0;
-        private DateTime _firstSavedDataTime;
-
         // 特殊抛竿相关变量
         private double _actual_castTime = 0;
         private double _reelBackTime = 0;
 
-        public AutoFisher(string ip, int port, double initial_castTime)
+        public AutoFisher(string ip, int port, double? initial_castTime)
         {
-            CastTime = initial_castTime;
+            _castTime = initial_castTime ?? kDisabledCastTime;
             _oscClient = new OSCClient(ip, port);
             _logMonitor = new VRChatLogMonitor(
                 () => _context.Post(_ => FishOnHook(), null),
@@ -194,7 +202,6 @@ namespace VRChatAutoFishing
                     ActionState.kStopped => "已停止",
                     ActionState.kReCasting => "重新抛竿",
                     ActionState.kReReeling => "重新收杆",
-                    ActionState.kTimeoutReelSingle => "收杆超时(单次)",
                     ActionState.kTimeoutReel => "收杆超时",
                     ActionState.kDistrubed => "被打断",
                     _ => "未知状态",
@@ -212,6 +219,12 @@ namespace VRChatAutoFishing
             SendClick(true);
             _cts.Token.WaitHandle.WaitOne(ms);
             SendClick(false);
+        }
+
+        private void ReleaseForDuration(int ms) {
+            SendClick(false);
+            _cts.Token.WaitHandle.WaitOne(ms);
+            SendClick(true);
         }
 
         private void HandleTimeout(object? sender, ElapsedEventArgs e)
@@ -267,7 +280,7 @@ namespace VRChatAutoFishing
                 Console.WriteLine("Fake in bucket! Reset to OutOfWater");
                 _fishCount--;
                 SendClick(true);
-                _reelBackTimer.Stop(); // 可能上次抛竿是短抛竿，停止回拉计时器
+                _reelBackTimer.Stop(); // 可能上次抛竿是短抛竿，停止回拉计时器，防止该函数退出后触发
                 _reelTimeoutTimer.Interval = MAX_REEL_TIME_SECONDS * 1000;
                 _reelTimeoutTimer.Start();
                 UpdateStatusText(ActionState.kReelingHasGotOutOfWater);
@@ -281,6 +294,7 @@ namespace VRChatAutoFishing
 
         private void PerformReelBack(object? sender, ElapsedEventArgs e)
         {
+            if (_currentAction != ActionState.kWaitForFish) return;
             PressForDuration((int)(_reelBackTime * 1000));
         }
 
@@ -300,11 +314,18 @@ namespace VRChatAutoFishing
             else
             {
                 _firstCast = false;
+                if (_castTime == kDisabledCastTime)
+                {
+                    Console.WriteLine("CastTime is disabled, first cast should be SendClick");
+                    SendClick(true);
+                    UpdateStatusText(ActionState.kWaitForFish);
+                    return;
+                }
             }
 
             UpdateStatusText(ActionState.kCasting);
 
-            double castDuration = CastTime;
+            double castDuration = _castTime;
 
             if (castDuration < 0.2)
             {
@@ -350,6 +371,14 @@ namespace VRChatAutoFishing
         {
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
+            if (_castTime == kDisabledCastTime) {
+                Console.WriteLine("FishOnHook: disabled cast, just release for a while");
+                ReleaseForDuration(50);
+                // 模拟一个极短的抛竿动作
+                PressForDuration(200);
+                ReleaseForDuration(50);
+                return;
+            }
             Console.WriteLine("FishOnHook");
             if ((DateTime.Now - _last_castTime).TotalSeconds < 3.0)
             {
@@ -384,10 +413,12 @@ namespace VRChatAutoFishing
                 UpdateStatusText(ActionState.kFinishedReel);
                 _fishCount++;
                 // 不等XP了，直接下一杆
+                DateTime timeBeforCast = DateTime.Now;
                 PerformCast();
+                TimeSpan timeElapsed = DateTime.Now - timeBeforCast;
                 // 如果我们错了，那么等于我们放开了 500ms 然后又拉了至少200ms
-                // 此时再放 0.5s，应该不至于逃脱（如果逃脱，那么重新收杆会失败，走抛竿程序）
-                _reelTimeoutTimer.Interval = 500;
+                // 此时再放一会，应该不至于逃脱（如果逃脱，那么重新收杆会失败，走抛竿程序）
+                _reelTimeoutTimer.Interval = double.Max(100, 3000.0 - timeElapsed.TotalMilliseconds);
                 _reelTimeoutTimer.Start();
                 return;
             }
@@ -398,9 +429,14 @@ namespace VRChatAutoFishing
 
         private void FishGotOut()
         {
-            Console.WriteLine("FishGotOut");
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
+            if (_castTime == kDisabledCastTime) { 
+                Console.WriteLine("FishGotOut: disabled cast, treat as got fish");
+                _fishCount++;
+                return;
+            }
+            Console.WriteLine("FishGotOut");
             if (_currentAction == ActionState.kReeling)
             {
                 Console.WriteLine("Fish got out of water during reeling");

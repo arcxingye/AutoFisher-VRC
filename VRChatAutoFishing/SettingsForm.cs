@@ -58,7 +58,8 @@ namespace VRChatAutoFishing
         public AppSettings GetOverridenAppSettings(AppSettings overrides) { 
             return new AppSettings
             {
-                castingTime = overrides.castingTime ?? AppSettings.DefaultCastingTime,
+                Cast = overrides.Cast ?? true,
+                CastingTime = overrides.CastingTime ?? AppSettings.DefaultCastingTime,
                 OSCIPAddr = overrides.OSCIPAddr ?? (System.Net.IPAddress.TryParse(tbOSCAddr.Text, out _) ? tbOSCAddr.Text : AppSettings.DefaultOSCIPAddr),
                 OSCPort = overrides.OSCPort ?? (int.TryParse(tbOSCPort.Text, out _) ? int.Parse(tbOSCPort.Text) : AppSettings.DefaultOSCPort),
                 WebhookSettings = overrides.WebhookSettings ?? webhookNotificationSettings.SaveSettings()
@@ -178,7 +179,9 @@ namespace VRChatAutoFishing
         public const string DefaultOSCIPAddr = "127.0.0.1";
         public const int DefaultOSCPort = 9000;
 
-        public double? castingTime { get; set; }
+        // 和 AutoFisher 相关的属性直接展平，不要封装
+        public bool? Cast { get; set; }
+        public double? CastingTime { get; set; }
         public string? OSCIPAddr { get; set; }
         public int? OSCPort { get; set; }
         public WebhookNotificationSettingsControl.WebhookSettings? WebhookSettings { get; set; }

@@ -14,28 +14,15 @@ namespace VRChatAutoFishing
         private System.Timers.Timer _delaySaveTimer;
         private AutoFisher? _autoFisher;
         private bool _isFisherRunning = false;
-        private ImageList imageListIcon;
-        private System.ComponentModel.IContainer components;
         private Managers? _managers;
+        private string _fullTitle;
 
         public MainForm()
         {
             InitializeComponent();
-            InitializeFisherComponents();
-            Text = GetTitleWithVersion();
-        }
+            _fullTitle = GetTitleWithVersion();
+            Text = _fullTitle;
 
-        private string GetTitleWithVersion() {
-            var version = Assembly.GetExecutingAssembly().GetName().Version;
-            if (version != null)
-            {
-                return $"自动钓鱼 v{version.Major}.{version.Minor}.{version.Build}";
-            }
-            return "自动钓鱼";
-        }
-
-        private void InitializeFisherComponents()
-        {
             AppSettings appSettings = _settingsForm.InitializeSavedValues();
             _delaySaveTimer = new();
             _delaySaveTimer.AutoReset = false;
@@ -44,16 +31,34 @@ namespace VRChatAutoFishing
 
             trackBarCastTime.Minimum = 0;
             trackBarCastTime.Maximum = 17;
-            trackBarCastTime.Value = (int)((appSettings.castingTime ?? AppSettings.DefaultCastingTime) * 10.0);
+            trackBarCastTime.Value = (int)((appSettings.CastingTime ?? AppSettings.DefaultCastingTime) * 10.0);
+            chbCast.Checked = appSettings.Cast ?? true;
+            ClearDelayToSaveSettings();
             UpdateCastTimeLabel();
         }
 
-        private void CreateFisher(string ip, int port, double castTime)
+        private string GetTitleWithVersion()
         {
+            var version = Assembly.GetExecutingAssembly().GetName().Version;
+            if (version != null)
+            {
+                return $"自动钓鱼 v{version.Major}.{version.Minor}.{version.Build}";
+            }
+            return "自动钓鱼";
+        }
+
+        private void CreateFisher()
+        {
+            Console.WriteLine("Recreating AutoFisher");
             if (_autoFisher != null)
             {
                 _autoFisher.Dispose();
             }
+
+            var appSettings = _settingsForm.GetOverridenAppSettings(GetOverridesOfAppSettings());
+            string ip = appSettings.OSCIPAddr ?? AppSettings.DefaultOSCIPAddr;
+            int port = appSettings.OSCPort ?? AppSettings.DefaultOSCPort;
+            double? castTime = chbCast.Checked ? (appSettings.CastingTime ?? AppSettings.DefaultCastingTime) : null;
 
             _autoFisher = new AutoFisher(ip, port, castTime);
 
@@ -67,16 +72,28 @@ namespace VRChatAutoFishing
                         return;
                     MessageBox.Show(this, errorMessage, "严重错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 });
+        }
+
+        private void DoUpdateAutoFisherConfiguration()
+        {
+            if (!_isFisherRunning || _autoFisher == null) return;
+
+            if ((_autoFisher.CastTime == AutoFisher.kDisabledCastTime && chbCast.Checked) ||
+                (_autoFisher.CastTime != AutoFisher.kDisabledCastTime && !chbCast.Checked))
+            {
+                // 此属性不支持动态更改，重新创建一个AutoFisher实例
+                CreateFisher();
+                _autoFisher?.Start();
+                return;
+            }
+
+            _autoFisher.CastTime = chbCast.Checked ? trackBarCastTime.Value / 10.0 : -1;
 
         }
 
         private void DelaySaveTimer_Elapsed(object? sender, ElapsedEventArgs e)
         {
-
-            SettingsForm.SaveSettingsToFile(_settingsForm.GetOverridenAppSettings(new AppSettings
-            {
-                castingTime = trackBarCastTime.Value / 10.0,
-            }));
+            SettingsForm.SaveSettingsToFile(_settingsForm.GetOverridenAppSettings(GetOverridesOfAppSettings()));
         }
 
         private void DelayToSaveSettings()
@@ -100,6 +117,15 @@ namespace VRChatAutoFishing
             // The AutoFisher will be created and started on button click.
         }
 
+        private AppSettings GetOverridesOfAppSettings()
+        {
+            return new AppSettings
+            {
+                CastingTime = trackBarCastTime.Value / 10.0,
+                Cast = chbCast.Checked,
+            };
+        }
+
         private void btnToggle_Click(object? sender, EventArgs e)
         {
             _isFisherRunning = !_isFisherRunning;
@@ -108,14 +134,8 @@ namespace VRChatAutoFishing
             {
                 btnSettings.Enabled = false;
                 _managers = _settingsForm.GetManagers();
-                var appSettings = _settingsForm.GetOverridenAppSettings(new AppSettings
-                {
-                    castingTime = trackBarCastTime.Value / 10.0,
-                });
 
-                CreateFisher(appSettings.OSCIPAddr ?? AppSettings.DefaultOSCIPAddr,
-                             appSettings.OSCPort ?? AppSettings.DefaultOSCPort,
-                             appSettings.castingTime ?? AppSettings.DefaultCastingTime);
+                CreateFisher();
                 _autoFisher?.Start();
             }
             else
@@ -131,7 +151,7 @@ namespace VRChatAutoFishing
         private void UpdateStatusText(string text)
         {
             Text = $"[{text}] - {GetTitleWithVersion()}";
-        }       
+        }
 
         private void btnHelp_Click(object? sender, EventArgs e)
         {
@@ -154,10 +174,14 @@ namespace VRChatAutoFishing
         private void trackBarCastTime_Scroll(object? sender, EventArgs e)
         {
             UpdateCastTimeLabel();
-            if (_autoFisher != null)
-            {
-                _autoFisher.CastTime = trackBarCastTime.Value / 10.0;
-            }
+            DoUpdateAutoFisherConfiguration();
+            DelayToSaveSettings();
+        }
+
+        private void chbCast_CheckedChanged(object? sender, EventArgs e)
+        {
+            trackBarCastTime.Enabled = chbCast.Checked;
+            DoUpdateAutoFisherConfiguration();
             DelayToSaveSettings();
         }
 
@@ -165,141 +189,8 @@ namespace VRChatAutoFishing
         {
             ClearDelayToSaveSettings();
             _settingsForm.ShowDialog();
-            var appSettings = _settingsForm.GetOverridenAppSettings(new AppSettings
-            {
-                castingTime = trackBarCastTime.Value / 10.0,
-            });
+            var appSettings = _settingsForm.GetOverridenAppSettings(GetOverridesOfAppSettings());
             SettingsForm.SaveSettingsToFile(appSettings);
         }
-
-        // Windows Form Designer generated code
-        private TrackBar trackBarCastTime;
-        private Label lblCastValue;
-        private Button btnToggle;
-        private Button btnHelp;
-        private Label label1;
-        private Button btnSettings;
-        private Button btnAnalysis;
-
-        private void InitializeComponent()
-        {
-            components = new System.ComponentModel.Container();
-            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
-            trackBarCastTime = new TrackBar();
-            lblCastValue = new Label();
-            btnToggle = new Button();
-            btnHelp = new Button();
-            label1 = new Label();
-            btnSettings = new Button();
-            btnAnalysis = new Button();
-            imageListIcon = new ImageList(components);
-            ((System.ComponentModel.ISupportInitialize)trackBarCastTime).BeginInit();
-            SuspendLayout();
-            // 
-            // trackBarCastTime
-            // 
-            trackBarCastTime.Location = new Point(80, 12);
-            trackBarCastTime.Maximum = 17;
-            trackBarCastTime.Name = "trackBarCastTime";
-            trackBarCastTime.Size = new Size(130, 45);
-            trackBarCastTime.TabIndex = 1;
-            trackBarCastTime.Value = 17;
-            trackBarCastTime.Scroll += trackBarCastTime_Scroll;
-            // 
-            // lblCastValue
-            // 
-            lblCastValue.Location = new Point(215, 15);
-            lblCastValue.Name = "lblCastValue";
-            lblCastValue.Size = new Size(40, 20);
-            lblCastValue.TabIndex = 2;
-            lblCastValue.Text = "1.7秒";
-            // 
-            // btnToggle
-            // 
-            btnToggle.ImageIndex = 2;
-            btnToggle.ImageList = imageListIcon;
-            btnToggle.Location = new Point(159, 62);
-            btnToggle.Name = "btnToggle";
-            btnToggle.Size = new Size(89, 30);
-            btnToggle.TabIndex = 4;
-            btnToggle.Text = "  开始";
-            btnToggle.TextImageRelation = TextImageRelation.ImageBeforeText;
-            btnToggle.Click += btnToggle_Click;
-            // 
-            // btnHelp
-            // 
-            btnHelp.ImageKey = "help (Custom).png";
-            btnHelp.ImageList = imageListIcon;
-            btnHelp.Location = new Point(15, 62);
-            btnHelp.Name = "btnHelp";
-            btnHelp.Size = new Size(42, 30);
-            btnHelp.TabIndex = 3;
-            btnHelp.Click += btnHelp_Click;
-            // 
-            // label1
-            // 
-            label1.Location = new Point(15, 15);
-            label1.Name = "label1";
-            label1.Size = new Size(60, 20);
-            label1.TabIndex = 0;
-            label1.Text = "蓄力时间:";
-            // 
-            // btnSettings
-            // 
-            btnSettings.ImageKey = "cog (Custom).png";
-            btnSettings.ImageList = imageListIcon;
-            btnSettings.Location = new Point(63, 62);
-            btnSettings.Name = "btnSettings";
-            btnSettings.Size = new Size(42, 30);
-            btnSettings.TabIndex = 11;
-            btnSettings.UseVisualStyleBackColor = true;
-            btnSettings.Click += btnSettings_Click;
-            // 
-            // btnAnalysis
-            // 
-            btnAnalysis.ImageKey = "poll (Custom).png";
-            btnAnalysis.ImageList = imageListIcon;
-            btnAnalysis.Location = new Point(111, 62);
-            btnAnalysis.Name = "btnAnalysis";
-            btnAnalysis.Size = new Size(42, 30);
-            btnAnalysis.TabIndex = 12;
-            btnAnalysis.UseVisualStyleBackColor = true;
-            btnAnalysis.Visible = false;
-            // 
-            // imageListIcon
-            // 
-            imageListIcon.ColorDepth = ColorDepth.Depth32Bit;
-            imageListIcon.ImageStream = (ImageListStreamer)resources.GetObject("imageListIcon.ImageStream");
-            imageListIcon.TransparentColor = Color.Transparent;
-            imageListIcon.Images.SetKeyName(0, "cog (Custom).png");
-            imageListIcon.Images.SetKeyName(1, "help (Custom).png");
-            imageListIcon.Images.SetKeyName(2, "play (Custom).png");
-            imageListIcon.Images.SetKeyName(3, "poll (Custom).png");
-            imageListIcon.Images.SetKeyName(4, "stop-circle (Custom).png");
-            // 
-            // MainForm
-            // 
-            BackgroundImageLayout = ImageLayout.None;
-            ClientSize = new Size(260, 104);
-            Controls.Add(btnAnalysis);
-            Controls.Add(btnSettings);
-            Controls.Add(label1);
-            Controls.Add(trackBarCastTime);
-            Controls.Add(lblCastValue);
-            Controls.Add(btnHelp);
-            Controls.Add(btnToggle);
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            Icon = (Icon)resources.GetObject("$this.Icon");
-            MaximizeBox = false;
-            Name = "MainForm";
-            StartPosition = FormStartPosition.CenterScreen;
-            Text = "自动钓鱼";
-            FormClosing += MainForm_FormClosing;
-            Load += MainForm_Load;
-            ((System.ComponentModel.ISupportInitialize)trackBarCastTime).EndInit();
-            ResumeLayout(false);
-            PerformLayout();
-        }
-
     }
 }
