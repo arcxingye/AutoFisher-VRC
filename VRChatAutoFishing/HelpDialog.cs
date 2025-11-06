@@ -108,7 +108,7 @@ namespace VRChatAutoFishing
             {
                 try
                 {
-                    Process.Start(new ProcessStartInfo(e.Link.LinkData.ToString()) { UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo(e.Link!.LinkData!.ToString()!) { UseShellExecute = true });
                 }
                 catch
                 {
@@ -147,7 +147,7 @@ namespace VRChatAutoFishing
             pictureBox.Dock = DockStyle.Fill;
 
             bool imageLoaded = LoadImageFromEmbeddedResource(pictureBox, imageName);
-            
+
             if (!imageLoaded)
             {
                 ShowErrorImage(pictureBox, displayWidth, displayHeight, $"未找到图片: {imageName}");

@@ -16,6 +16,7 @@
     <Configurations>Debug;Release;ReleaseWithRuntime</Configurations>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <PublishReadyToRun>true</PublishReadyToRun>
+    <GenerateResourceWarnOnBinaryFormatterUse>false</GenerateResourceWarnOnBinaryFormatterUse>
   </PropertyGroup>
 
   <!-- 配置带 Runtime 的版本 -->
