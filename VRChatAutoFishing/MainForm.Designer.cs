@@ -39,6 +39,7 @@
             btnSettings = new Button();
             btnAnalysis = new Button();
             chbCast = new CheckBox();
+            txtAnalysis = new TextBox();
             ((System.ComponentModel.ISupportInitialize)trackBarCastTime).BeginInit();
             SuspendLayout();
             // 
@@ -113,7 +114,7 @@
             btnAnalysis.Size = new Size(42, 30);
             btnAnalysis.TabIndex = 12;
             btnAnalysis.UseVisualStyleBackColor = true;
-            btnAnalysis.Visible = false;
+            btnAnalysis.Click += btnAnalysis_Click;
             // 
             // chbCast
             // 
@@ -128,6 +129,18 @@
             chbCast.UseVisualStyleBackColor = true;
             chbCast.CheckedChanged += chbCast_CheckedChanged;
             // 
+            // txtAnalysis
+            // 
+            txtAnalysis.BackColor = SystemColors.Control;
+            txtAnalysis.BorderStyle = BorderStyle.FixedSingle;
+            txtAnalysis.Location = new Point(12, 12);
+            txtAnalysis.Multiline = true;
+            txtAnalysis.Name = "txtAnalysis";
+            txtAnalysis.Size = new Size(236, 44);
+            txtAnalysis.TabIndex = 14;
+            txtAnalysis.Text = "暂无统计信息";
+            txtAnalysis.Visible = false;
+            // 
             // MainForm
             // 
             BackgroundImageLayout = ImageLayout.None;
@@ -139,6 +152,7 @@
             Controls.Add(lblCastValue);
             Controls.Add(btnHelp);
             Controls.Add(btnToggle);
+            Controls.Add(txtAnalysis);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             Icon = (Icon)resources.GetObject("$this.Icon");
             MaximizeBox = false;
@@ -161,5 +175,6 @@
         private Button btnAnalysis;
         private CheckBox chbCast;
         private ImageList imageListIcon;
+        private TextBox txtAnalysis;
     }
 }

@@ -9,6 +9,15 @@
 
 说明：软件里面有
 
+
+## 数据统计 (Since V1.6.0)
+
+点击柱状图图标的按钮即可看到。
+
+## 非抛竿极限钓鱼 (Since V1.6.0)
+
+详见 [Issue #13](https://github.com/arcxingye/AutoFisher-VRC/issues/13)。
+
 ## OSC 地址/端口修改 (Since V1.5.4)
 
 可以自行填写本地 IPv4 地址和端口号，适用于某些冲突情况。如果你不知道如何填写，请保持默认。

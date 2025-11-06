@@ -16,6 +16,11 @@ namespace VRChatAutoFishing
         private bool _isFisherRunning = false;
         private Managers? _managers;
         private string _fullTitle;
+        private DateTime _startTime = DateTime.MaxValue;
+        private DateTime _endTime = DateTime.MinValue;
+        int _errorCount = 0;
+        int _fishCount = 0;
+        private System.Timers.Timer _updateAnalysisTimer;
 
         public MainForm()
         {
@@ -28,6 +33,11 @@ namespace VRChatAutoFishing
             _delaySaveTimer.AutoReset = false;
             _delaySaveTimer.Elapsed += DelaySaveTimer_Elapsed;
             _delaySaveTimer.SynchronizingObject = this;
+
+            _updateAnalysisTimer = new();
+            _updateAnalysisTimer.Interval = 1000;
+            _updateAnalysisTimer.AutoReset = true;
+            _updateAnalysisTimer.Elapsed += (s, e) => Invoke(DoUpdateAnalysis);
 
             trackBarCastTime.Minimum = 0;
             trackBarCastTime.Maximum = 17;
@@ -64,14 +74,17 @@ namespace VRChatAutoFishing
 
             // Subscribe to events from AutoFisher
             _autoFisher.OnUpdateStatus += status => Invoke(() => UpdateStatusText(status));
-            _autoFisher.OnNotify += message => Invoke(() => _managers?.notificationManager.NotifyAll(message));
+            _autoFisher.OnNotify += message => Invoke(() => { _errorCount++; _managers?.notificationManager.NotifyAll(message); });
 
             _autoFisher.OnCriticalError += errorMessage => Invoke(() =>
                 {
+                    _errorCount++;
                     if (_managers?.notificationManager.NotifyAll(errorMessage).success ?? false)
                         return;
                     MessageBox.Show(this, errorMessage, "严重错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 });
+
+            _autoFisher.OnFishCaught += fishCount => Invoke( () => { _fishCount = fishCount; DoUpdateAnalysis(); });
         }
 
         private void DoUpdateAutoFisherConfiguration()
@@ -86,9 +99,20 @@ namespace VRChatAutoFishing
                 _autoFisher?.Start();
                 return;
             }
+            if (chbCast.Checked)
+                _autoFisher.CastTime = trackBarCastTime.Value / 10.0;
 
-            _autoFisher.CastTime = chbCast.Checked ? trackBarCastTime.Value / 10.0 : -1;
+        }
 
+        private void DoUpdateAnalysis()
+        {
+            if (_endTime < _startTime) return;
+            _endTime = DateTime.Now;
+            TimeSpan totalTime = _endTime - _startTime;
+            double avgTimePerFish = _fishCount > 0 ? totalTime.TotalSeconds / _fishCount : 0;
+
+            txtAnalysis.Text = $"已钓：{_fishCount} 条，共用时：{totalTime:hh\\:mm\\:ss}\r\n" +
+                $"平均耗时：{avgTimePerFish:F1} 秒/条，错误次数：{_errorCount}";
         }
 
         private void DelaySaveTimer_Elapsed(object? sender, ElapsedEventArgs e)
@@ -134,7 +158,12 @@ namespace VRChatAutoFishing
             {
                 btnSettings.Enabled = false;
                 _managers = _settingsForm.GetManagers();
-
+                _startTime = DateTime.Now;
+                _endTime = DateTime.Now;
+                _fishCount = 0;
+                _errorCount = 0;
+                _updateAnalysisTimer.Start();
+                DoUpdateAnalysis();
                 CreateFisher();
                 _autoFisher?.Start();
             }
@@ -142,6 +171,7 @@ namespace VRChatAutoFishing
             {
                 _autoFisher?.Dispose();
                 _autoFisher = null;
+                _updateAnalysisTimer.Stop();
                 btnSettings.Enabled = true;
             }
             btnToggle.Text = _isFisherRunning ? "  停止" : "  开始";
@@ -191,6 +221,26 @@ namespace VRChatAutoFishing
             _settingsForm.ShowDialog();
             var appSettings = _settingsForm.GetOverridenAppSettings(GetOverridesOfAppSettings());
             SettingsForm.SaveSettingsToFile(appSettings);
+        }
+
+        private void btnAnalysis_Click(object sender, EventArgs e)
+        {
+            if (btnAnalysis.FlatStyle == FlatStyle.Standard)
+            {
+                btnAnalysis.FlatStyle = FlatStyle.Flat;
+                chbCast.Visible = false;
+                trackBarCastTime.Visible = false;
+                lblCastValue.Visible = false;
+                txtAnalysis.Visible = true;
+            }
+            else
+            {
+                btnAnalysis.FlatStyle = FlatStyle.Standard;
+                chbCast.Visible = true;
+                trackBarCastTime.Visible = true;
+                lblCastValue.Visible = true;
+                txtAnalysis.Visible = false;
+            }
         }
     }
 }

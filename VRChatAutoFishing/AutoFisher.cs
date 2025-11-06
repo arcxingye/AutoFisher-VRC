@@ -14,11 +14,13 @@ namespace VRChatAutoFishing
         public delegate void OnUpdateStatusHandler(string text);
         public delegate void OnNotifyHandler(string message);
         public delegate void OnCriticalErrorHandler(string errorMessage);
+        public delegate void OnFishCaughtHandler(int totalFishCaught);
 
         // Note: The handlers will not dispatch on the UI thread.
         public OnUpdateStatusHandler? OnUpdateStatus;
         public OnNotifyHandler? OnNotify;
         public OnCriticalErrorHandler? OnCriticalError;
+        public OnFishCaughtHandler? OnFishCaught;
 
         private enum ActionState
         {
@@ -279,6 +281,7 @@ namespace VRChatAutoFishing
                 // 上次入桶后没有加经验，视为假入桶，继续收杆
                 Console.WriteLine("Fake in bucket! Reset to OutOfWater");
                 _fishCount--;
+                OnFishCaught?.Invoke(_fishCount);
                 SendClick(true);
                 _reelBackTimer.Stop(); // 可能上次抛竿是短抛竿，停止回拉计时器，防止该函数退出后触发
                 _reelTimeoutTimer.Interval = MAX_REEL_TIME_SECONDS * 1000;
@@ -374,9 +377,6 @@ namespace VRChatAutoFishing
             if (_castTime == kDisabledCastTime) {
                 Console.WriteLine("FishOnHook: disabled cast, just release for a while");
                 ReleaseForDuration(50);
-                // 模拟一个极短的抛竿动作
-                //PressForDuration(200);
-                //ReleaseForDuration(50);
                 return;
             }
             Console.WriteLine("FishOnHook");
@@ -411,7 +411,8 @@ namespace VRChatAutoFishing
                 _reelTimeoutTimer.Stop();
                 SendClick(false);
                 UpdateStatusText(ActionState.kFinishedReel);
-                _fishCount++;
+                ++_fishCount;
+                OnFishCaught?.Invoke(_fishCount);
                 // 不等XP了，直接下一杆
                 DateTime timeBeforCast = DateTime.Now;
                 PerformCast();
@@ -433,7 +434,8 @@ namespace VRChatAutoFishing
             if (token.IsCancellationRequested) return;
             if (_castTime == kDisabledCastTime) { 
                 Console.WriteLine("FishGotOut: disabled cast, treat as got fish");
-                _fishCount++;
+                ++_fishCount;
+                OnFishCaught?.Invoke(_fishCount);
                 return;
             }
             Console.WriteLine("FishGotOut");
