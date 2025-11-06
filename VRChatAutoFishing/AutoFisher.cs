@@ -47,6 +47,7 @@ namespace VRChatAutoFishing
         private ActionState _currentAction = ActionState.kIdle;
         //private DateTime _lastCycleEnd;
         private DateTime _last_castTime;
+        private DateTime _lastDisabledCastFishOnHook = DateTime.MinValue;
         private readonly System.Timers.Timer _timeoutTimer;
         private readonly System.Timers.Timer _statusDisplayTimer;
         private readonly System.Timers.Timer _reelBackTimer;
@@ -223,7 +224,8 @@ namespace VRChatAutoFishing
             SendClick(false);
         }
 
-        private void ReleaseForDuration(int ms) {
+        private void ReleaseForDuration(int ms)
+        {
             SendClick(false);
             _cts.Token.WaitHandle.WaitOne(ms);
             SendClick(true);
@@ -374,8 +376,16 @@ namespace VRChatAutoFishing
         {
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
-            if (_castTime == kDisabledCastTime) {
+            if (_castTime == kDisabledCastTime)
+            {
+                // 防抖: 3秒内不重复处理
+                if ((DateTime.Now - _lastDisabledCastFishOnHook).TotalSeconds < 3.0)
+                {
+                    Console.WriteLine("FishOnHook: disabled cast, debounced (within 3s)");
+                    return;
+                }
                 Console.WriteLine("FishOnHook: disabled cast, just release for a while");
+                _lastDisabledCastFishOnHook = DateTime.Now;
                 ReleaseForDuration(50);
                 return;
             }
@@ -432,7 +442,8 @@ namespace VRChatAutoFishing
         {
             var token = _cts.Token;
             if (token.IsCancellationRequested) return;
-            if (_castTime == kDisabledCastTime) { 
+            if (_castTime == kDisabledCastTime)
+            {
                 Console.WriteLine("FishGotOut: disabled cast, treat as got fish");
                 ++_fishCount;
                 OnFishCaught?.Invoke(_fishCount);
